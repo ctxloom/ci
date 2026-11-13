@@ -78,3 +78,5 @@ try {
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
+# The installer runs above left their exit codes behind; this script passed.
+$global:LASTEXITCODE = 0

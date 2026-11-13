@@ -20,9 +20,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
-        with:
-          tool: actionlint@1.7.12
+      # install-action has no actionlint manifest at its pin (it falls back to
+      # cargo-binstall, which cannot find it): the release asset, by checksum.
+      - name: actionlint 1.7.12
+        run: |
+          cd "$RUNNER_TEMP"
+          tgz=actionlint_1.7.12_linux_amd64.tar.gz
+          curl -fsSL --retry 3 -o "$tgz" "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$tgz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $tgz" | sha256sum -c -
+          mkdir -p actionlint && tar -xzf "$tgz" -C actionlint actionlint
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
       - name: actionlint (the runner's shellcheck checks the run blocks)
         run: actionlint -color
       - name: shellcheck
