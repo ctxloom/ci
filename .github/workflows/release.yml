@@ -71,6 +71,9 @@ jobs:
           pattern: ${{ inputs.bin }}-*
           path: dist
           merge-multiple: true
+          # Each was uploaded as-is (archive: false); a .zip among them (the
+          # Windows archive, a .dSYM.zip) must stay one, not be extracted.
+          skip-decompress: true
       - name: The installers and SHA256SUMS
         env:
           BIN: ${{ inputs.bin }}
@@ -128,6 +131,9 @@ jobs:
           pattern: ${{ inputs.bin }}-*
           path: dist
           merge-multiple: true
+          # Each was uploaded as-is (archive: false); a .zip among them (the
+          # Windows archive, a .dSYM.zip) must stay one, not be extracted.
+          skip-decompress: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-files
