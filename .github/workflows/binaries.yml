@@ -1,0 +1,123 @@
+# The binaries, one job per target (a reusable workflow: `uses:
+# ctxloom/ci/.github/workflows/binaries.yml@<sha>`). Each job checks out the
+# caller, sets up its toolchain and tools, and runs package-binary with the
+# caller's own build and package recipes; the archives (tar.gz on unix, zip
+# on Windows) and the debug files are the run's artifacts, each uploaded
+# as-is. On a tag, the tag must be `v` + the caller's VERSION file first.
+#
+# Both macOS targets are built on one macos-15 (arm64) runner: x86_64 is
+# cross-compiled (the x86_64-apple-darwin target added) and run by the
+# recipes under Rosetta.
+
+name: binaries
+
+on:
+  workflow_call:
+    inputs:
+      bin:
+        description: The binary's name.
+        type: string
+        required: true
+      targets:
+        description: >
+          The targets, a JSON list of {os, arch, runner, target}: `target` the
+          rust triple to cross-build (empty: the host's). Default: linux-x86_64,
+          windows-x86_64, macos-arm64, macos-x86_64.
+        type: string
+        default: >-
+          [
+            {"os": "linux", "arch": "x86_64", "runner": "ubuntu-24.04", "target": ""},
+            {"os": "windows", "arch": "x86_64", "runner": "windows-2025", "target": ""},
+            {"os": "macos", "arch": "arm64", "runner": "macos-15", "target": ""},
+            {"os": "macos", "arch": "x86_64", "runner": "macos-15", "target": "x86_64-apple-darwin"}
+          ]
+      profile:
+        description: The cargo profile (both recipes' argument).
+        type: string
+        default: release
+      build-recipe:
+        description: The just recipe that builds the binary and prints its path.
+        type: string
+        default: release-binary
+      package-recipe:
+        description: The just recipe that packages it and prints its files.
+        type: string
+        default: release-package
+      tools:
+        description: setup-rust's tools (just at least).
+        type: string
+        default: just@1.40.0
+      protoc-version:
+        description: setup-protoc's version; empty sets up no protoc.
+        type: string
+        default: "21.12"
+      versionator-version:
+        description: setup-versionator's version; empty sets up no versionator.
+        type: string
+        default: "0.3.0"
+      version-file:
+        description: The file a `v*` tag must match (`v` + its content).
+        type: string
+        default: VERSION
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  binary:
+    name: binary (${{ matrix.os }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.targets) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Some paths are longer than Windows' 260 characters.
+      - name: Long paths
+        if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag is the version file's
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION_FILE: ${{ inputs.version-file }}
+        run: |
+          version=$(tr -d '\r\n' < "$VERSION_FILE")
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME is not $VERSION_FILE's v$version"
+            exit 1
+          fi
+      - uses: ctxloom/ci/.github/actions/setup-rust@15bc2be88dc5fdc7910f6c0f0db4f167b1421d4e # main 2026-11-12
+        with:
+          tools: ${{ inputs.tools }}
+          targets: ${{ matrix.target }}
+          cache-key: binary-${{ inputs.profile }}-${{ matrix.os }}-${{ matrix.arch }}
+      - if: inputs.protoc-version != ''
+        uses: ctxloom/ci/.github/actions/setup-protoc@15bc2be88dc5fdc7910f6c0f0db4f167b1421d4e # main 2026-11-12
+        with:
+          version: ${{ inputs.protoc-version }}
+      - if: inputs.versionator-version != ''
+        uses: ctxloom/ci/.github/actions/setup-versionator@15bc2be88dc5fdc7910f6c0f0db4f167b1421d4e # main 2026-11-12
+        with:
+          version: ${{ inputs.versionator-version }}
+      - uses: ctxloom/ci/.github/actions/package-binary@15bc2be88dc5fdc7910f6c0f0db4f167b1421d4e # main 2026-11-12
+        with:
+          bin: ${{ inputs.bin }}
+          os: ${{ matrix.os }}
+          arch: ${{ matrix.arch }}
+          target: ${{ matrix.target }}
+          profile: ${{ inputs.profile }}
+          build-recipe: ${{ inputs.build-recipe }}
+          package-recipe: ${{ inputs.package-recipe }}
+      - if: failure()
+        uses: ctxloom/ci/.github/actions/gate-logs@15bc2be88dc5fdc7910f6c0f0db4f167b1421d4e # main 2026-11-12
+        with:
+          name: binary-${{ matrix.os }}-${{ matrix.arch }}
