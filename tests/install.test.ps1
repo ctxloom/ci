@@ -34,8 +34,13 @@ try {
 
     function Invoke-Installer([string]$AppData, [string[]]$Arguments) {
         $env:LOCALAPPDATA = $AppData
+        # Windows PowerShell 5.1 turns a native program's stderr into an error
+        # record, which `Stop` would make terminating: the refusals are expected.
+        $ErrorActionPreference = 'Continue'
         $out = & $shell -NoProfile -ExecutionPolicy Bypass -File $installer -BaseUrl $url @Arguments 2>&1 | Out-String
-        return @{ Code = $LASTEXITCODE; Out = $out }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        return @{ Code = $code; Out = $out }
     }
 
     $appData = Join-Path $work 'appdata1'
