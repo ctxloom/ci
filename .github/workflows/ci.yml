@@ -1,0 +1,94 @@
+# This repository's own CI: actionlint and shellcheck over everything, then a
+# self-test that runs the setup actions from this checkout (`./`) and the
+# installers against fake releases (tests/).
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: actionlint@1.7.12
+      - name: actionlint (the runner's shellcheck checks the run blocks)
+        run: actionlint -color
+      - name: shellcheck
+        run: |
+          shellcheck --version | head -n 2
+          shellcheck -s sh installers/install.sh
+          shellcheck tests/install.test.sh
+      - name: Every inner action is pinned by a full commit
+        run: |
+          # `uses: owner/repo[/path]@<40 hex> # <release>`, or this repository's own `./`.
+          bad=$(grep -rnE '^\s*-?\s*uses:' .github | grep -vE 'uses: \./' \
+            | grep -vE 'uses: [^@ ]+@[0-9a-f]{40} # \S+' || true)
+          if [ -n "$bad" ]; then echo "::error::unpinned actions:"; echo "$bad"; exit 1; fi
+
+  self-test-linux:
+    name: self-test (linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-versionator
+      - uses: ./.github/actions/setup-protoc
+      - uses: ./.github/actions/setup-ltk
+      - name: The tools are on PATH
+        run: |
+          command -v versionator protoc ltk
+          protoc --version | grep -qx 'libprotoc 3.21.12'
+          versionator --help > /dev/null
+          ltk --version
+      - name: install.sh against a fixture (file:// and http://)
+        run: |
+          tests/install.test.sh
+          INSTALL_TEST_HTTP=1 tests/install.test.sh
+
+  self-test-macos:
+    name: self-test (macos)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-versionator
+      - uses: ./.github/actions/setup-protoc
+      - name: The tools are on PATH
+        run: command -v versionator protoc && protoc --version
+      - name: install.sh against a fixture (shasum, xattr)
+        run: |
+          command -v sha256sum || echo "no sha256sum: shasum is the checker"
+          tests/install.test.sh
+
+  self-test-windows:
+    name: self-test (windows)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-versionator
+      - uses: ./.github/actions/setup-protoc
+      - name: The tools are on PATH
+        shell: bash
+        run: command -v versionator protoc && protoc --version
+      - name: install.ps1 against a fixture (PowerShell 7)
+        shell: pwsh
+        run: ./tests/install.test.ps1
+      - name: install.ps1 against a fixture (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tests/install.test.ps1

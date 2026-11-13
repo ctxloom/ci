@@ -1,0 +1,44 @@
+name: setup-rust
+description: >
+  The caller's toolchain (its rust-toolchain.toml, made the default too), any
+  extra targets, its tools by taiki-e/install-action, and Swatinem/rust-cache
+  (saved on main only unless told otherwise).
+inputs:
+  tools:
+    description: >
+      taiki-e/install-action's `tool` list, each pinned (e.g.
+      `just@1.40.0,cargo-nextest@0.9.146,cargo-deny@0.20.2,cargo-mutants@27.0.0`).
+      Empty installs nothing.
+    default: ""
+  targets:
+    description: Extra rustup targets, space- or comma-separated (e.g. `x86_64-apple-darwin`).
+    default: ""
+  cache-key:
+    description: rust-cache's `shared-key`; empty keys the cache by job (rust-cache's default).
+    default: ""
+  save-cache:
+    description: Whether rust-cache saves; by default only on a push to main (branches restore only).
+    default: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+runs:
+  using: composite
+  steps:
+    - name: Toolchain (rust-toolchain.toml, also the default)
+      shell: bash
+      env:
+        TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        rustup show active-toolchain || rustup toolchain install
+        channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+        [ -n "$channel" ] || { echo "::error::rust-toolchain.toml names no channel"; exit 1; }
+        rustup default "$channel"
+        for t in ${TARGETS//,/ }; do rustup target add "$t"; done
+        rustc --version
+    - if: inputs.tools != ''
+      uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      with:
+        tool: ${{ inputs.tools }}
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        save-if: ${{ inputs.save-cache }}

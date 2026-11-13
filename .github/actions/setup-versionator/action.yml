@@ -1,0 +1,57 @@
+name: setup-versionator
+description: >
+  versionator from its GitHub release (no Go): the asset for the runner's OS
+  and arch, its sha256 checked against BOTH the value pinned here and the
+  release's checksums.txt, put on PATH.
+inputs:
+  version:
+    description: versionator's release version without the `v` (only the versions pinned below are accepted).
+    default: "0.3.0"
+runs:
+  using: composite
+  steps:
+    - name: versionator ${{ inputs.version }}
+      shell: bash
+      env:
+        VERSIONATOR_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) platform=linux_amd64 ext=tar.gz ;;
+          Linux-ARM64) platform=linux_arm64 ext=tar.gz ;;
+          macOS-ARM64) platform=darwin_arm64 ext=tar.gz ;;
+          macOS-X64) platform=darwin_amd64 ext=tar.gz ;;
+          Windows-X64) platform=windows_amd64 ext=zip ;;
+          *) echo "::error::no versionator asset for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+        esac
+        asset="versionator_${VERSIONATOR_VERSION}_${platform}.${ext}"
+        case "$asset" in
+          versionator_0.3.0_darwin_amd64.tar.gz) sum=4160fe7ef5750a898e1d330125f98ff357d33b748a538aec1bc2a42253adfa2b ;;
+          versionator_0.3.0_darwin_arm64.tar.gz) sum=4517c86428a4d1de9b293ae7fecdcfa168e1f029cbfd57ad2f3ef5326782cf91 ;;
+          versionator_0.3.0_linux_amd64.tar.gz) sum=0769878350b0a3f552c71b116f50fcdbcf6056cbce43b77f7c99aaa9bf1ef61b ;;
+          versionator_0.3.0_linux_arm64.tar.gz) sum=22dc2908702864188486e4086511cb3bbd76f2602ef79c2a2daef32bb082090b ;;
+          versionator_0.3.0_windows_amd64.zip) sum=b68bed08e5722c19adb4d572f759208694e9c3b1d6d1c98c28b9282e567dfac2 ;;
+          *) echo "::error::no pinned sha256 for $asset: add it to setup-versionator"; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/versionator-$VERSIONATOR_VERSION"
+        rm -rf "$dir"; mkdir -p "$dir"; cd "$dir"
+        base="https://github.com/benjaminabbitt/versionator/releases/download/v$VERSIONATOR_VERSION"
+        curl -fsSL --retry 3 -o "$asset" "$base/$asset"
+        curl -fsSL --retry 3 -o checksums.txt "$base/checksums.txt"
+        listed=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' checksums.txt)
+        [ "$listed" = "$sum" ] || { echo "::error::checksums.txt lists ${listed:-nothing} for $asset, not the pinned $sum"; exit 1; }
+        if command -v sha256sum >/dev/null; then
+          echo "$sum  $asset" | sha256sum -c -
+        else
+          echo "$sum  $asset" | shasum -a 256 -c -
+        fi
+        mkdir bin
+        if [ "$ext" = zip ]; then
+          7z x -bso0 -obin "$asset" versionator.exe
+          cygpath -w "$dir/bin" >> "$GITHUB_PATH"
+          "$dir/bin/versionator.exe" --help > /dev/null
+        else
+          tar -xzf "$asset" -C bin versionator
+          echo "$dir/bin" >> "$GITHUB_PATH"
+          "$dir/bin/versionator" --help > /dev/null
+        fi

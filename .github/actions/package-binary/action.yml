@@ -1,0 +1,124 @@
+name: package-binary
+description: >
+  Build and package one binary with the caller's own just recipes, then
+  archive it and upload it. `just <build-recipe> <profile>` prints the built
+  binary's path; its stamp is read from the binary itself; `just
+  <package-recipe> <os> dist <name> <profile>` prints the packaged files, one
+  per line, the binary first, then at most one debug file. The binary is
+  archived as `<name>.tar.gz` on unix (tar keeps the exec bit, which
+  upload-artifact's zip would drop) or `<name>.zip` on Windows, holding
+  `<bin>` (`<bin>.exe`); the archive and the debug file are each uploaded
+  as-is (`archive: false`), the file's name being the artifact's.
+inputs:
+  bin:
+    description: The binary's name (e.g. `ctxloom`).
+    required: true
+  os:
+    description: linux, macos or windows (the package recipe's first argument, and the name's).
+    required: true
+  arch:
+    description: x86_64 or arm64 (the name's).
+    required: true
+  target:
+    description: >
+      A rust target triple to cross-build for (exported as CARGO_BUILD_TARGET,
+      which the build recipe must honour); empty builds for the host.
+    default: ""
+  profile:
+    description: The cargo profile, passed to both recipes.
+    default: release
+  build-recipe:
+    default: release-binary
+    description: The just recipe that builds the binary and prints its path.
+  package-recipe:
+    default: release-package
+    description: The just recipe that packages it and prints the files.
+  version-args:
+    description: The binary's arguments that print its version as JSON.
+    default: version --format json
+  version-filter:
+    description: The jq filter that reads the stamp from that JSON.
+    default: .version
+outputs:
+  name:
+    description: "`<bin>-<stamp>-<os>-<arch>`"
+    value: ${{ steps.package.outputs.name }}
+  archive:
+    description: The archive's path, relative to the workspace.
+    value: ${{ steps.package.outputs.archive }}
+  debug:
+    description: The debug file's path, or empty.
+    value: ${{ steps.package.outputs.debug }}
+runs:
+  using: composite
+  steps:
+    # An x86_64 macOS binary built on an arm64 runner is run by the recipes
+    # (its own checks, its stamp): through Rosetta, installed when missing.
+    - name: Rosetta (an x86_64 binary on arm64 macOS)
+      if: runner.os == 'macOS' && runner.arch == 'ARM64' && startsWith(inputs.target, 'x86_64-')
+      shell: bash
+      run: |
+        /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
+        /usr/bin/arch -x86_64 /usr/bin/true
+    - name: Build and package ${{ inputs.bin }} (${{ inputs.os }}-${{ inputs.arch }})
+      id: package
+      shell: bash
+      env:
+        BIN: ${{ inputs.bin }}
+        OS: ${{ inputs.os }}
+        ARCH: ${{ inputs.arch }}
+        TARGET: ${{ inputs.target }}
+        PROFILE: ${{ inputs.profile }}
+        BUILD_RECIPE: ${{ inputs.build-recipe }}
+        PACKAGE_RECIPE: ${{ inputs.package-recipe }}
+        VERSION_ARGS: ${{ inputs.version-args }}
+        VERSION_FILTER: ${{ inputs.version-filter }}
+      run: |
+        set -euo pipefail
+        [ -n "$TARGET" ] && export CARGO_BUILD_TARGET="$TARGET"
+        built=$(just "$BUILD_RECIPE" "$PROFILE")
+        read -ra version_args <<< "$VERSION_ARGS"
+        stamp=$("$built" "${version_args[@]}" | jq -r "$VERSION_FILTER" | tr -d '\r')
+        [ -n "$stamp" ] && [ "$stamp" != null ] || { echo "::error::$built gave no stamp"; exit 1; }
+        name="$BIN-$stamp-$OS-$ARCH"
+        rm -rf dist; mkdir -p dist
+        just "$PACKAGE_RECIPE" "$OS" dist "$name" "$PROFILE" > "$RUNNER_TEMP/packaged"
+        cat "$RUNNER_TEMP/packaged"
+        lines=$(grep -c . "$RUNNER_TEMP/packaged" || true)
+        [ "$lines" -ge 1 ] && [ "$lines" -le 2 ] || { echo "::error::$PACKAGE_RECIPE printed $lines files, not 1 or 2"; exit 1; }
+        packed=dist/$(basename "$(sed -n 1p "$RUNNER_TEMP/packaged")")
+        debug=
+        [ "$lines" -eq 2 ] && debug=dist/$(basename "$(sed -n 2p "$RUNNER_TEMP/packaged")")
+        stage="$RUNNER_TEMP/stage-$name"
+        rm -rf "$stage"; mkdir -p "$stage"
+        if [ "$OS" = windows ]; then
+          cp "$packed" "$stage/$BIN.exe"
+          archive="dist/$name.zip"
+          (cd "$stage" && 7z a -tzip -bso0 "$OLDPWD/$archive" "$BIN.exe")
+        else
+          cp "$packed" "$stage/$BIN"
+          chmod 0755 "$stage/$BIN"
+          archive="dist/$name.tar.gz"
+          # macOS tar would add AppleDouble files for extended attributes.
+          COPYFILE_DISABLE=1 tar -czf "$archive" -C "$stage" "$BIN"
+          tar -tvzf "$archive"
+        fi
+        rm -f "$packed"
+        ls -l dist
+        {
+          echo "name=$name"
+          echo "archive=$archive"
+          echo "debug=$debug"
+          echo "archive-name=$(basename "$archive")"
+        } >> "$GITHUB_OUTPUT"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        path: ${{ steps.package.outputs.archive }}
+        archive: false
+        if-no-files-found: error
+    - if: steps.package.outputs.debug != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        path: ${{ steps.package.outputs.debug }}
+        archive: false
+        if-no-files-found: error

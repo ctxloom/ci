@@ -1,0 +1,50 @@
+name: setup-ltk
+description: >
+  ltk (the Go ctxloom's `cmd/ltk`), go-installed at a pinned commit and cached
+  by that commit: Go is set up and `go install` run ONLY on a cache miss. An
+  interim until the ltk Rust port ships prebuilt.
+inputs:
+  rev:
+    description: The full commit of github.com/ctxloom/ctxloom whose cmd/ltk to install.
+    default: f36e8dfb21e4f0179a86acc36f39939320f7fff9
+  go-version:
+    description: The Go toolchain for a cache miss.
+    default: "1.26.9"
+runs:
+  using: composite
+  steps:
+    - name: ltk's place
+      id: place
+      shell: bash
+      env:
+        REV: ${{ inputs.rev }}
+      run: |
+        set -euo pipefail
+        [[ "$REV" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::setup-ltk's rev must be a full commit, not '$REV'"; exit 1; }
+        echo "dir=$RUNNER_TOOL_CACHE/ltk/$REV" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.place.outputs.dir }}
+        key: ltk-${{ runner.os }}-${{ runner.arch }}-${{ inputs.rev }}-go${{ inputs.go-version }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: false
+    - if: steps.cache.outputs.cache-hit != 'true'
+      name: go install ltk (a cache miss)
+      shell: bash
+      env:
+        GOBIN: ${{ steps.place.outputs.dir }}
+        REV: ${{ inputs.rev }}
+      run: go install "github.com/ctxloom/ctxloom/cmd/ltk@$REV"
+    - name: ltk on PATH
+      shell: bash
+      env:
+        DIR: ${{ steps.place.outputs.dir }}
+        HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        echo "$DIR" >> "$GITHUB_PATH"
+        echo "ltk from ${HIT:+the cache}${HIT:-go install}: $("$DIR/ltk" --version)"

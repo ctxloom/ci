@@ -1,0 +1,52 @@
+name: setup-protoc
+description: >
+  protoc from protocolbuffers/protobuf's release for the runner's OS and arch,
+  checked against the sha256 pinned here, put on PATH.
+inputs:
+  version:
+    description: protoc's release version without the `v` (only the versions pinned below are accepted).
+    default: "21.12"
+runs:
+  using: composite
+  steps:
+    - name: protoc ${{ inputs.version }}
+      shell: bash
+      env:
+        PROTOC_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) asset=linux-x86_64 ;;
+          Linux-ARM64) asset=linux-aarch_64 ;;
+          macOS-ARM64) asset=osx-aarch_64 ;;
+          macOS-X64) asset=osx-x86_64 ;;
+          Windows-X64) asset=win64 ;;
+          *) echo "::error::no protoc asset for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+        esac
+        # The pinned checksums, by version and asset (computed from the
+        # release's zips; protobuf publishes none).
+        case "$PROTOC_VERSION-$asset" in
+          21.12-linux-x86_64) sum=3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8 ;;
+          21.12-linux-aarch_64) sum=2dd17f75d66a682640b136e31848da9fb2eefe68d55303baf8b32617374f6711 ;;
+          21.12-osx-aarch_64) sum=96839af0caed64352442fc8236f4bdf7c1cd6efcfaa98fa5db37307a73fc7c70 ;;
+          21.12-osx-x86_64) sum=9448ff40278504a7ae5139bb70c962acc78c32d8fc54b4890a55c14c68b9d10a ;;
+          21.12-win64) sum=71852a30cf62975358edfcbbff93086e8857a079c8e4d6904881aa968d65c7f9 ;;
+          *) echo "::error::no pinned sha256 for protoc $PROTOC_VERSION $asset: add it to setup-protoc"; exit 1 ;;
+        esac
+        cd "$RUNNER_TEMP"
+        zip="protoc-$PROTOC_VERSION-$asset.zip"
+        curl -fsSL --retry 3 -o "$zip" "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/$zip"
+        if command -v sha256sum >/dev/null; then
+          echo "$sum  $zip" | sha256sum -c -
+        else
+          echo "$sum  $zip" | shasum -a 256 -c -
+        fi
+        rm -rf protoc
+        if [ "$RUNNER_OS" = Windows ]; then
+          7z x -bso0 -oprotoc "$zip"
+          cygpath -w "$PWD/protoc/bin" >> "$GITHUB_PATH"
+        else
+          unzip -q "$zip" -d protoc
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+        fi
+        "$PWD/protoc/bin/protoc" --version

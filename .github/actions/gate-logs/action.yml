@@ -1,0 +1,28 @@
+name: gate-logs
+description: >
+  The gates' logs (target/logs/*.log): printed, each in a group, and uploaded
+  as the artifact `gate-logs-<name>`. Call it with `if: failure()`.
+inputs:
+  name:
+    description: The artifact's suffix, e.g. the OS (`linux`).
+    required: true
+  path:
+    description: The logs' directory.
+    default: target/logs
+runs:
+  using: composite
+  steps:
+    - name: The gates' logs
+      if: always()
+      shell: bash
+      env:
+        LOGS: ${{ inputs.path }}
+      run: |
+        shopt -s nullglob
+        for log in "$LOGS"/*.log; do echo "::group::$log"; cat "$log"; echo "::endgroup::"; done
+    - if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: gate-logs-${{ inputs.name }}
+        path: ${{ inputs.path }}/
+        if-no-files-found: ignore

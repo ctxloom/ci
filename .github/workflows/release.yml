@@ -1,0 +1,146 @@
+# The release (a reusable workflow: `uses:
+# ctxloom/ci/.github/workflows/release.yml@<sha>`), after binaries.yml in the
+# same run. `checksums` downloads the run's `<bin>-*` artifacts (the archives
+# and debug files binaries.yml uploaded), adds this repository's installers
+# with their defaults set for the caller (install.sh, install.ps1), writes
+# SHA256SUMS over all of them and uploads them as the artifact
+# `release-files`. `release`, on a `v*` tag whose name is `v` + the caller's
+# VERSION, creates the GitHub release with every file attached; it is the one
+# job that may write the repository (`contents: write`, which the caller's
+# calling job must grant). Without a tag (a dispatch) nothing is released:
+# the files are the run's artifact.
+
+name: release
+
+on:
+  workflow_call:
+    inputs:
+      bin:
+        description: The binary's name (the artifacts' prefix, the installers' default).
+        type: string
+        required: true
+      ci-ref:
+        description: >
+          The commit of ctxloom/ci whose installers to attach: the same SHA the
+          caller pins this workflow at.
+        type: string
+        required: true
+      wrapper-env:
+        description: install.sh's default INSTALL_WRAPPER_ENV (NAME=VALUE pairs the wrapper exports).
+        type: string
+        default: ""
+      version-file:
+        description: The file a `v*` tag must match (`v` + its content).
+        type: string
+        default: VERSION
+      expected-files:
+        description: How many `<bin>-*` files binaries.yml must have made (0 checks none).
+        type: number
+        default: 0
+
+permissions:
+  contents: read
+
+jobs:
+  checksums:
+    name: checksums
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: caller
+      - name: The tag is the version file's
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION_FILE: ${{ inputs.version-file }}
+        run: |
+          version=$(tr -d '\r\n' < "caller/$VERSION_FILE")
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME is not $VERSION_FILE's v$version"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ctxloom/ci
+          ref: ${{ inputs.ci-ref }}
+          path: ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ${{ inputs.bin }}-*
+          path: dist
+          merge-multiple: true
+      - name: The installers and SHA256SUMS
+        env:
+          BIN: ${{ inputs.bin }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+          WRAPPER_ENV: ${{ inputs.wrapper-env }}
+          EXPECTED: ${{ inputs.expected-files }}
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          made=$(find . -maxdepth 1 -type f -name "$BIN-*" | wc -l)
+          [ "$made" -gt 0 ] || { echo "::error::no $BIN-* files from binaries.yml"; exit 1; }
+          if [ "$EXPECTED" -gt 0 ] && [ "$made" -ne "$EXPECTED" ]; then
+            echo "::error::$made $BIN-* files, not the $EXPECTED expected"; exit 1
+          fi
+          version=latest
+          [ "$IS_TAG" = true ] && version=$TAG
+          for v in "$REPO" "$BIN" "$version" "$WRAPPER_ENV"; do
+            case "$v" in *"'"* | *\\* | *'|'*) echo "::error::an installer default holds a quote, backslash or bar: $v"; exit 1 ;; esac
+          done
+          sed -e "s|^DEFAULT_REPO=''\$|DEFAULT_REPO='$REPO'|" \
+              -e "s|^DEFAULT_BIN=''\$|DEFAULT_BIN='$BIN'|" \
+              -e "s|^DEFAULT_VERSION='latest'\$|DEFAULT_VERSION='$version'|" \
+              -e "s|^DEFAULT_WRAPPER_ENV=''\$|DEFAULT_WRAPPER_ENV='$WRAPPER_ENV'|" \
+              ../ci/installers/install.sh > install.sh
+          sed -e "s|^\$DefaultRepo = ''\$|\$DefaultRepo = '$REPO'|" \
+              -e "s|^\$DefaultBin = ''\$|\$DefaultBin = '$BIN'|" \
+              -e "s|^\$DefaultVersion = 'latest'\$|\$DefaultVersion = '$version'|" \
+              ../ci/installers/install.ps1 > install.ps1
+          grep -qx "DEFAULT_REPO='$REPO'" install.sh && grep -qx "DEFAULT_BIN='$BIN'" install.sh
+          grep -qx "\$DefaultRepo = '$REPO'" install.ps1 && grep -qx "\$DefaultBin = '$BIN'" install.ps1
+          sha256sum "$BIN"-* install.sh install.ps1 > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            dist/SHA256SUMS
+            dist/install.sh
+            dist/install.ps1
+          if-no-files-found: error
+
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: checksums
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release and attach its assets
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ${{ inputs.bin }}-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: dist
+      - name: The release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          pre=(); case "$TAG" in *-*) pre=(--prerelease) ;; esac
+          mapfile -t files < <(awk '{ print $2 }' SHA256SUMS)
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${pre[@]}" "${files[@]}" SHA256SUMS
